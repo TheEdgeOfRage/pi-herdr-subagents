@@ -112,6 +112,9 @@ function buildSubagentRoutingGuidelines(
     "For a bare spawn, omit model and thinking to inherit the parent runtime.",
     "When an intentional runtime override is necessary, prefer changing thinking before changing models: minimal/low for bounded mechanical work, medium for ordinary implementation or review, and high+ for architecture, concurrency, security, or hard diagnosis.",
     "When overriding a subagent model, use an exact authenticated provider/model-id from the live catalog below. Do not invent aliases or fuzzy names.",
+    "Spawn only for needed, independent work. Never spawn a subagent for work you intend to do in the main context. If you can do the task yourself, do it yourself.",
+    "If a child result affects the task, wait for it before acting or responding.",
+    "Parallel children must have independent deliverables.",
     agentCatalog ?? "Available named subagent catalog becomes available after session start.",
     modelCatalog ?? "Authenticated subagent model catalog becomes available after session start.",
   ];
