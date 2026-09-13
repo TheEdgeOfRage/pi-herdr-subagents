@@ -1,7 +1,4 @@
 {
-  "status": {
-    "enabled": true
-  },
   "models": {
     "agents": {}
   }

@@ -6,12 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import * as subagentsModule from "../pi-extension/subagents/index.ts";
-import {
-  cleanupSubagentsForShutdown,
-  selectCompletionApi,
-  shouldDeliverSubagentCompletion,
-  shouldPreserveSubagentsOnShutdown,
-} from "../pi-extension/subagents/index.ts";
+import { cleanupSubagentsForShutdown } from "../pi-extension/subagents/index.ts";
 
 import {
   getLeafId,
@@ -532,14 +527,10 @@ describe("status.ts", () => {
     });
   });
 
-  it("loads a valid config file", () => {
+  it("does not expose status-steer configuration", () => {
     const examplePath = fileURLToPath(new URL("../config.json.example", import.meta.url));
-    const config = loadStatusConfig(examplePath);
-
-    assert.deepEqual(config, {
-      enabled: true,
-      lineLimit: 4,
-    });
+    const config = JSON.parse(readFileSync(examplePath, "utf8"));
+    assert.equal("status" in config, false);
   });
 
   it("loads the shared example when local config is absent", () => {
@@ -894,7 +885,7 @@ describe("status.ts", () => {
     );
     const waitingLine = formatStatusLine("Worker", classifyStatus(waitingState, 300_000));
     const recoveredLine = formatTransitionLine("Worker", classifyStatus(activeState, 420_000), "recovered");
-    const lines = [waitingLine, recoveredLine, "Scout running 2m.", "Reviewer running 4m.", "Planner running 6m."];
+    const lines = [waitingLine, recoveredLine, "Scout running 2m.", "Reviewer running 4m.", "Worker running 6m."];
     const capped = capStatusLines(lines, 3);
     const aggregate = formatStatusAggregate(lines, 3);
 
@@ -987,162 +978,18 @@ describe("subagent discovery", () => {
     });
   });
 
-  it("loads explicit interactive flag from frontmatter", async () => {
-    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
-      writeAgentFile(
-        projectAgentsDir,
-        "interactive-true-test-agent",
-        [
-          "name: interactive-true-test-agent",
-          "model: anthropic/test-interactive-true",
-          "interactive: true",
-        ].join("\n"),
-      );
-      writeAgentFile(
-        projectAgentsDir,
-        "interactive-false-test-agent",
-        [
-          "name: interactive-false-test-agent",
-          "model: anthropic/test-interactive-false",
-          "interactive: false",
-        ].join("\n"),
-      );
-
-      const loadedTrue = testApi.loadAgentDefaults("interactive-true-test-agent");
-      assert.equal(loadedTrue?.interactive, true);
-
-      const loadedFalse = testApi.loadAgentDefaults("interactive-false-test-agent");
-      assert.equal(loadedFalse?.interactive, false);
-    });
-  });
-
-  it("leaves interactive undefined when not set in frontmatter", async () => {
-    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
-      writeAgentFile(
-        projectAgentsDir,
-        "interactive-unset-test-agent",
-        [
-          "name: interactive-unset-test-agent",
-          "model: anthropic/test-interactive-unset",
-        ].join("\n"),
-      );
-
-      const loaded = testApi.loadAgentDefaults("interactive-unset-test-agent");
-      assert.equal(loaded?.interactive, undefined);
-    });
-  });
-
-  it("resolves auto-exit and interactive behavior for named and bare spawns", () => {
-    // Autonomous named agents are not interactive, so the parent gets status pings.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit({ name: "A", task: "T" }, { autoExit: true }),
-      true,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: true }),
-      false,
-    );
-
-    // Named agents without auto-exit preserve their interactive behavior.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit({ name: "A", task: "T" }, { autoExit: false }),
-      false,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: false }),
-      true,
-    );
-
-    // Bare task spawns are autonomous by default. Otherwise a normal final
-    // answer leaves the child open and no completion is delivered to the parent.
-    assert.equal(testApi.resolveEffectiveAutoExit({ name: "A", task: "T" }, null), true);
-    assert.equal(testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, null), false);
-
-    // A bare full-context fork invoked directly through the tool is still an
-    // autonomous task. Forking only controls inherited conversation context.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit({ name: "A", task: "T", fork: true }, null),
-      true,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T", fork: true }, null),
-      false,
-    );
-
-    // Interactive fork workflows such as /iterate opt out explicitly.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit(
-        { name: "A", task: "T", fork: true, interactive: true },
-        null,
-      ),
-      false,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T", fork: true, interactive: true },
-        null,
-      ),
-      true,
-    );
-  });
-
-  it("resolveEffectiveInteractive honors explicit frontmatter over the auto-exit default", () => {
-    // Autonomous agent that still wants to be treated as interactive.
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T" },
-        { autoExit: true, interactive: true },
-      ),
-      true,
-    );
-    // Non-auto-exit agent that opts back into stall pings.
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T" },
-        { interactive: false },
-      ),
-      false,
-    );
-  });
-
-  it("resolveEffectiveInteractive honors the explicit tool parameter over all else", () => {
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T", interactive: false },
-        { autoExit: false, interactive: true },
-      ),
-      false,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T", interactive: true },
-        { autoExit: true, interactive: false },
-      ),
-      true,
-    );
-  });
-
-  it("bundled agents inherit the parent runtime and preserve interaction modes", async () => {
+  it("accepts only autonomous named agents", async () => {
     await withIsolatedAgentEnv(() => {
-      const expectedInteraction = {
-        scout: false,
-        worker: false,
-        reviewer: false,
-        planner: true,
-        "visual-tester": false,
-      } as const;
-
-      for (const [name, interactive] of Object.entries(expectedInteraction)) {
+      for (const name of ["scout", "worker", "reviewer", "visual-tester"]) {
         const defs = testApi.loadAgentDefaults(name);
         assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
-        assert.equal(defs.model, undefined, `${name} should inherit the parent model`);
-        assert.equal(defs.thinking, undefined, `${name} should inherit the parent thinking level`);
-        assert.equal(
-          testApi.resolveEffectiveInteractive({ name, task: "" }, defs),
-          interactive,
-          `${name} should preserve its interaction mode`,
-        );
+        assert.equal(defs.autoExit, true);
+        assert.equal(testApi.validateAutonomousAgent(name, defs), null);
       }
+      assert.match(
+        testApi.validateAutonomousAgent("manual", { autoExit: false }),
+        /require auto-exit: true/,
+      );
     });
   });
 
@@ -2018,20 +1865,12 @@ describe("completion.ts", () => {
 });
 
 describe("commands", () => {
-  it("/iterate always emits a full-context fork tool call", () => {
-    const { api, registeredCommands, sentUserMessages } = createMockExtensionApi();
-
+  it("registers only the autonomous /subagent command", () => {
+    const { api, registeredCommands } = createMockExtensionApi();
     (subagentsModule as any).default(api);
-
-    const iterate = registeredCommands.find((command) => command.name === "iterate");
-    assert.ok(iterate, "expected /iterate to be registered");
-
-    iterate.handler("Fix the bug", {});
-
-    assert.equal(sentUserMessages.length, 1);
-    assert.match(sentUserMessages[0], /fork: true/);
-    assert.match(sentUserMessages[0], /interactive: true/);
-    assert.match(sentUserMessages[0], /name: "Iterate"/);
+    assert.equal(registeredCommands.some((command) => command.name === "subagent"), true);
+    assert.equal(registeredCommands.some((command) => command.name === "iterate"), false);
+    assert.equal(registeredCommands.some((command) => command.name === "plan"), false);
   });
 });
 
@@ -2144,19 +1983,6 @@ describe("tool registration", () => {
     }
   });
 
-  it("defaults resumed subagents to auto-exit and non-interactive tracking", () => {
-    const testApi = (subagentsModule as any).__test__;
-
-    assert.deepEqual(testApi.resolveResumeLaunchBehavior({}), {
-      autoExit: true,
-      interactive: false,
-    });
-    assert.deepEqual(testApi.resolveResumeLaunchBehavior({ autoExit: false }), {
-      autoExit: false,
-      interactive: true,
-    });
-  });
-
   it("expands spawning false to deny subagent interruption", () => {
     const testApi = (subagentsModule as any).__test__;
     const denied = testApi.resolveDenyTools({ spawning: false });
@@ -2187,77 +2013,22 @@ describe("tool registration", () => {
     assert.match(output, /\(unnamed\)/);
   });
 
-  it("registers subagent_resume with an autoExit override", () => {
+  it("does not expose autoExit when resuming", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
-
     const resumeTool = registeredTools.find((tool) => tool.name === "subagent_resume");
     assert.ok(resumeTool, "expected subagent_resume tool to be registered");
-
-    const autoExitSchema = resumeTool.parameters.properties.autoExit;
-    assert.equal(autoExitSchema.type, "boolean");
-    assert.match(autoExitSchema.description, /Defaults to true/);
+    assert.equal("autoExit" in resumeTool.parameters.properties, false);
   });
 });
 
 describe("subagent parent lifecycle", () => {
-  it("preserves active subagents during extension reload", () => {
-    const abortController = new AbortController();
-    const agents = new Map([["child", {
-      abortController,
-      lifecycle: createLifecycle(1_000),
-    }]]);
-
-    cleanupSubagentsForShutdown("reload", agents);
-
-    assert.equal(shouldPreserveSubagentsOnShutdown("reload"), true);
-    assert.equal(abortController.signal.aborted, false);
-    assert.equal(shouldDeliverSubagentCompletion(agents.get("child")!), true);
-    assert.equal(agents.size, 1);
-  });
-
-  it("aborts and clears active subagents during final shutdown", () => {
-    for (const reason of ["quit", "new", "resume", "fork", undefined]) {
-      const abortController = new AbortController();
-      const running = { abortController, lifecycle: createLifecycle(1_000) };
-      const agents = new Map([["child", running]]);
-
-      cleanupSubagentsForShutdown(reason, agents);
-
-      assert.equal(shouldPreserveSubagentsOnShutdown(reason), false);
-      assert.equal(abortController.signal.aborted, true);
-      // Delivery is suppressed before the map is cleared so a racing watcher
-      // that still holds a reference cannot deliver after shutdown.
-      assert.equal(running.lifecycle.delivery, "suppressed");
-      assert.equal(shouldDeliverSubagentCompletion(running), false);
-      assert.equal(agents.size, 0);
-    }
-  });
-
-  it("treats lifecycle.delivery as the authoritative completion gate", () => {
-    const pending = { lifecycle: createLifecycle(1_000) };
-    assert.equal(shouldDeliverSubagentCompletion(pending), true);
-
-    const delivered = {
-      lifecycle: { ...createLifecycle(1_000), delivery: "delivered" as const },
-    };
-    assert.equal(shouldDeliverSubagentCompletion(delivered), false);
-
-    const suppressed = {
-      lifecycle: { ...createLifecycle(1_000), delivery: "suppressed" as const },
-    };
-    assert.equal(shouldDeliverSubagentCompletion(suppressed), false);
-
-    // Pre-lifecycle fixtures without a lifecycle field still default to pending.
-    assert.equal(shouldDeliverSubagentCompletion({} as any), true);
-  });
-
-  it("delivers completion through the reloaded extension API", () => {
-    const previous = { id: "previous" };
-    const current = { id: "current" };
-
-    assert.equal(selectCompletionApi(previous, current), current);
-    assert.equal(selectCompletionApi(previous, undefined), previous);
+  it("suppresses and clears pending foreground children on shutdown", () => {
+    const running = { surface: "missing-pane", lifecycle: createLifecycle(1_000) };
+    const agents = new Map([["child", running]]);
+    cleanupSubagentsForShutdown(agents);
+    assert.equal(running.lifecycle.delivery, "suppressed");
+    assert.equal(agents.size, 0);
   });
 });
 
@@ -2745,83 +2516,6 @@ describe("subagent interruption", () => {
     assert.match(presentation, /subagent_resume/);
     assert.match(presentation, /Resume: pi --session/);
     assert.doesNotMatch(presentation, /ignored when errorMessage is present/);
-  });
-});
-
-describe("subagent status renderer", () => {
-  function createTheme() {
-    return {
-      fg(_color: string, text: string) {
-        return text;
-      },
-      bg(_color: string, text: string) {
-        return text;
-      },
-      bold(text: string) {
-        return text;
-      },
-    };
-  }
-
-  it("renders only capped lines plus overflow", () => {
-    const { api, registeredMessageRenderers } = createMockExtensionApi();
-    (subagentsModule as any).default(api);
-
-    const rendererEntry = registeredMessageRenderers.find((entry) => entry.name === "subagent_status");
-    assert.ok(rendererEntry, "expected subagent_status renderer to be registered");
-
-    const visibleLines = [
-      "Worker running 5m, active (bash 2m).",
-      "Scout running 3m, waiting 1m.",
-      "Reviewer running 2m, active (streaming 30s).",
-      "Planner running 4m, waiting 2m.",
-    ];
-    const rendered = rendererEntry.renderer(
-      {
-        customType: "subagent_status",
-        content: "Subagent status:\n• Worker running 5m, active (bash 2m).",
-        details: {
-          lines: visibleLines,
-          overflow: 2,
-        },
-      },
-      { expanded: true },
-      createTheme(),
-    );
-    const output = rendered.render(80).join("\n");
-
-    assert.match(output, /Subagent status/);
-    for (const line of visibleLines) {
-      assert.match(output, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    }
-    assert.match(output, /\+2 more running\./);
-  });
-
-  it("stays within narrow widths", () => {
-    const { api, registeredMessageRenderers } = createMockExtensionApi();
-    (subagentsModule as any).default(api);
-
-    const rendererEntry = registeredMessageRenderers.find((entry) => entry.name === "subagent_status");
-    assert.ok(rendererEntry, "expected subagent_status renderer to be registered");
-
-    const rendered = rendererEntry.renderer(
-      {
-        customType: "subagent_status",
-        content: "Subagent status:\n• Worker running 5m, active (bash 2m).",
-        details: { lines: ["Worker running 5m, active (bash 2m)."], overflow: 0 },
-      },
-      { expanded: true },
-      createTheme(),
-    );
-
-    for (const width of [4, 5, 6]) {
-      for (const line of rendered.render(width)) {
-        assert.ok(
-          visibleWidth(line) <= width,
-          `expected line width <= ${width}, got ${visibleWidth(line)} for ${JSON.stringify(line)}`,
-        );
-      }
-    }
   });
 });
 

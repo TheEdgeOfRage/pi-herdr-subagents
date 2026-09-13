@@ -1,7 +1,7 @@
 {
   "name": "pi-herdr-subagents",
   "version": "0.2.0",
-  "description": "Interactive subagents for pi running in herdr",
+  "description": "Synchronous subagent delegation for pi running in herdr",
   "keywords": [
     "pi-package"
   ],

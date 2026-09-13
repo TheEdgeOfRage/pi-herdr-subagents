@@ -93,7 +93,7 @@ for (const backend of backends) {
         PI_TIMEOUT,
       );
 
-      // Verify: session file was created (shown in steer result)
+      // Verify: the returned tool result exposes the child session file.
       const sessionMatch = screen.match(/Session:\s*(\S+\.jsonl)/);
       if (sessionMatch) {
         const sessionFile = sessionMatch[1];
@@ -108,9 +108,9 @@ for (const backend of backends) {
       }
     });
 
-    // ── In-progress activity snapshots ──
+    // ── Foreground widget lifecycle ──
 
-    it("keeps a long active tool call from surfacing false stalled status", async () => {
+    it("keeps a long active tool call visible without status steers", async () => {
       const id = uniqueId();
       const startFile = `/tmp/pi-integ-status-start-${id}.txt`;
       const markerFile = `/tmp/pi-integ-status-${id}.txt`;
@@ -208,7 +208,7 @@ for (const backend of backends) {
         `  name: "Fork-${id}"`,
         `  fork: true`,
         `  task: "Run this bash command: echo 'FORK_OK_${id}' > '${markerFile}'"`,
-        `Do not set the agent or interactive parameters. Just set name, fork, and task.`,
+        `Do not set the agent parameter. Just set name, fork, and task.`,
         `After you receive the result, say FORK_COMPLETE.`,
       ].join("\n");
 
@@ -225,8 +225,7 @@ for (const backend of backends) {
         PI_TIMEOUT,
       );
 
-      // Receiving the result proves the bare fork auto-exited and its child pane
-      // was finalized instead of remaining at the editor as an interactive run.
+      // Receiving the result proves the bare fork auto-exited and finalized.
 
       // Verify: the forked session has a parent link
       const sessionMatch = screen.match(/Session:\s*(\S+\.jsonl)/);
@@ -248,7 +247,7 @@ for (const backend of backends) {
 
     // ── caller_ping ──
 
-    it("subagent caller_ping sends notification back to the parent", async () => {
+    it("subagent caller_ping returns needs-help directly to the parent", async () => {
       const id = uniqueId();
 
       const surface = createTrackedSurface(env, `ping-${id}`);
@@ -264,8 +263,7 @@ for (const backend of backends) {
 
       startPi(surface, env.dir, task);
 
-      // The test-ping agent calls caller_ping, which steers a "needs help" message
-      // back to the outer pi. Look for it on screen.
+      // The test-ping agent returns a needs-help tool result to the outer Pi.
       const screen = await waitForScreen(
         surface,
         /needs help|PING|caller_ping|ping/i,

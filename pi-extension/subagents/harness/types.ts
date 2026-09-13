@@ -11,7 +11,6 @@ export interface SubagentLaunchParams {
   resumeSessionId?: string;
   tools?: string;
   skills?: string;
-  interactive?: boolean;
 }
 
 export interface AgentDefinition {
@@ -23,7 +22,6 @@ export interface AgentDefinition {
   skills?: string;
   sessionMode?: string;
   systemPromptMode?: string;
-  interactive?: boolean;
   cli?: string;
   commandTemplate?: string;
   body?: string;
@@ -43,8 +41,6 @@ export interface SubagentLaunchContext {
   subagentSessionFile: string;
   effectiveCwd: string;
   localAgentDir?: string;
-  effectiveAutoExit: boolean;
-  effectiveInteractive: boolean;
   inheritsConversationContext: boolean;
   taskDelivery: "direct" | "artifact";
   denySet?: Set<string>;
@@ -79,7 +75,6 @@ export interface SubagentResultContext {
     launchScriptFile?: string;
     cli?: string;
     sentinelFile?: string;
-    interactive: boolean;
     runtimePlan?: ResolvedRuntimePlan;
   };
   completionResult: CompletionResult;
