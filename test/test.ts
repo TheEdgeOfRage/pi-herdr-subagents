@@ -6,13 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import * as subagentsModule from "../pi-extension/subagents/index.ts";
-import { captureGuidanceRequests } from "./guidance-session.ts";
-import {
-  cleanupSubagentsForShutdown,
-  selectCompletionApi,
-  shouldDeliverSubagentCompletion,
-  shouldPreserveSubagentsOnShutdown,
-} from "../pi-extension/subagents/index.ts";
+import { cleanupSubagentsForShutdown } from "../pi-extension/subagents/index.ts";
 
 import {
   getLeafId,
@@ -26,10 +20,6 @@ import {
 } from "../pi-extension/subagents/session.ts";
 
 import { isHerdrAvailable, __herdrTest__ } from "../pi-extension/subagents/herdr.ts";
-import {
-  parseSubagentLayout,
-  resolveSubagentLayout,
-} from "../pi-extension/subagents/terminal.ts";
 import {
   loadModelConfig,
   parseModelConfig,
@@ -158,16 +148,6 @@ function restoreEnvVar(name: string, value: string | undefined) {
     return;
   }
   process.env[name] = value;
-}
-
-function withMockedNow<T>(now: number, fn: () => T): T {
-  const originalNow = Date.now;
-  Date.now = () => now;
-  try {
-    return fn();
-  } finally {
-    Date.now = originalNow;
-  }
 }
 
 function writeAgentFile(
@@ -537,14 +517,10 @@ describe("status.ts", () => {
     });
   });
 
-  it("loads a valid config file", () => {
+  it("does not expose status-steer configuration", () => {
     const examplePath = fileURLToPath(new URL("../config.json.example", import.meta.url));
-    const config = loadStatusConfig(examplePath);
-
-    assert.deepEqual(config, {
-      enabled: true,
-      lineLimit: 4,
-    });
+    const config = JSON.parse(readFileSync(examplePath, "utf8"));
+    assert.equal("status" in config, false);
   });
 
   it("loads the shared example when local config is absent", () => {
@@ -899,7 +875,7 @@ describe("status.ts", () => {
     );
     const waitingLine = formatStatusLine("Worker", classifyStatus(waitingState, 300_000));
     const recoveredLine = formatTransitionLine("Worker", classifyStatus(activeState, 420_000), "recovered");
-    const lines = [waitingLine, recoveredLine, "Scout running 2m.", "Reviewer running 4m.", "Planner running 6m."];
+    const lines = [waitingLine, recoveredLine, "Scout running 2m.", "Reviewer running 4m.", "Worker running 6m."];
     const capped = capStatusLines(lines, 3);
     const aggregate = formatStatusAggregate(lines, 3);
 
@@ -992,162 +968,18 @@ describe("subagent discovery", () => {
     });
   });
 
-  it("loads explicit interactive flag from frontmatter", async () => {
-    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
-      writeAgentFile(
-        projectAgentsDir,
-        "interactive-true-test-agent",
-        [
-          "name: interactive-true-test-agent",
-          "model: anthropic/test-interactive-true",
-          "interactive: true",
-        ].join("\n"),
-      );
-      writeAgentFile(
-        projectAgentsDir,
-        "interactive-false-test-agent",
-        [
-          "name: interactive-false-test-agent",
-          "model: anthropic/test-interactive-false",
-          "interactive: false",
-        ].join("\n"),
-      );
-
-      const loadedTrue = testApi.loadAgentDefaults("interactive-true-test-agent");
-      assert.equal(loadedTrue?.interactive, true);
-
-      const loadedFalse = testApi.loadAgentDefaults("interactive-false-test-agent");
-      assert.equal(loadedFalse?.interactive, false);
-    });
-  });
-
-  it("leaves interactive undefined when not set in frontmatter", async () => {
-    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
-      writeAgentFile(
-        projectAgentsDir,
-        "interactive-unset-test-agent",
-        [
-          "name: interactive-unset-test-agent",
-          "model: anthropic/test-interactive-unset",
-        ].join("\n"),
-      );
-
-      const loaded = testApi.loadAgentDefaults("interactive-unset-test-agent");
-      assert.equal(loaded?.interactive, undefined);
-    });
-  });
-
-  it("resolves auto-exit and interactive behavior for named and bare spawns", () => {
-    // Autonomous named agents are not interactive, so the parent gets status pings.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit({ name: "A", task: "T" }, { autoExit: true }),
-      true,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: true }),
-      false,
-    );
-
-    // Named agents without auto-exit preserve their interactive behavior.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit({ name: "A", task: "T" }, { autoExit: false }),
-      false,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: false }),
-      true,
-    );
-
-    // Bare task spawns are autonomous by default. Otherwise a normal final
-    // answer leaves the child open and no completion is delivered to the parent.
-    assert.equal(testApi.resolveEffectiveAutoExit({ name: "A", task: "T" }, null), true);
-    assert.equal(testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, null), false);
-
-    // A bare full-context fork invoked directly through the tool is still an
-    // autonomous task. Forking only controls inherited conversation context.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit({ name: "A", task: "T", fork: true }, null),
-      true,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T", fork: true }, null),
-      false,
-    );
-
-    // Interactive fork workflows such as /iterate opt out explicitly.
-    assert.equal(
-      testApi.resolveEffectiveAutoExit(
-        { name: "A", task: "T", fork: true, interactive: true },
-        null,
-      ),
-      false,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T", fork: true, interactive: true },
-        null,
-      ),
-      true,
-    );
-  });
-
-  it("resolveEffectiveInteractive honors explicit frontmatter over the auto-exit default", () => {
-    // Autonomous agent that still wants to be treated as interactive.
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T" },
-        { autoExit: true, interactive: true },
-      ),
-      true,
-    );
-    // Non-auto-exit agent that opts back into stall pings.
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T" },
-        { interactive: false },
-      ),
-      false,
-    );
-  });
-
-  it("resolveEffectiveInteractive honors the explicit tool parameter over all else", () => {
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T", interactive: false },
-        { autoExit: false, interactive: true },
-      ),
-      false,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T", interactive: true },
-        { autoExit: true, interactive: false },
-      ),
-      true,
-    );
-  });
-
-  it("bundled agents inherit the parent runtime and preserve interaction modes", async () => {
+  it("accepts only autonomous named agents", async () => {
     await withIsolatedAgentEnv(() => {
-      const expectedInteraction = {
-        scout: false,
-        worker: false,
-        reviewer: false,
-        planner: true,
-        "visual-tester": false,
-      } as const;
-
-      for (const [name, interactive] of Object.entries(expectedInteraction)) {
+      for (const name of ["scout", "worker", "reviewer", "visual-tester"]) {
         const defs = testApi.loadAgentDefaults(name);
         assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
-        assert.equal(defs.model, undefined, `${name} should inherit the parent model`);
-        assert.equal(defs.thinking, undefined, `${name} should inherit the parent thinking level`);
-        assert.equal(
-          testApi.resolveEffectiveInteractive({ name, task: "" }, defs),
-          interactive,
-          `${name} should preserve its interaction mode`,
-        );
+        assert.equal(defs.autoExit, true);
+        assert.equal(testApi.validateAutonomousAgent(name, defs), null);
       }
+      assert.match(
+        testApi.validateAutonomousAgent("manual", { autoExit: false }),
+        /require auto-exit: true/,
+      );
     });
   });
 
@@ -1491,11 +1323,6 @@ describe("subagent-done.ts", () => {
 
     it("stays open after Escape aborts the run", () => {
       const messages = [{ role: "assistant", stopReason: "aborted" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
-    });
-
-    it("stays open after a tool-use turn", () => {
-      const messages = [{ role: "assistant", stopReason: "toolUse" }];
       assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
     });
 
@@ -2028,54 +1855,104 @@ describe("completion.ts", () => {
 });
 
 describe("commands", () => {
-  it("/iterate always emits a full-context fork tool call", () => {
-    const { api, registeredCommands, sentUserMessages } = createMockExtensionApi();
-
+  it("registers only the autonomous /subagent command", () => {
+    const { api, registeredCommands } = createMockExtensionApi();
     (subagentsModule as any).default(api);
-
-    const iterate = registeredCommands.find((command) => command.name === "iterate");
-    assert.ok(iterate, "expected /iterate to be registered");
-
-    iterate.handler("Fix the bug", {});
-
-    assert.equal(sentUserMessages.length, 1);
-    assert.match(sentUserMessages[0], /fork: true/);
-    assert.match(sentUserMessages[0], /interactive: true/);
-    assert.match(sentUserMessages[0], /name: "Iterate"/);
+    assert.equal(registeredCommands.some((command) => command.name === "subagent"), true);
+    assert.equal(registeredCommands.some((command) => command.name === "iterate"), false);
+    assert.equal(registeredCommands.some((command) => command.name === "plan"), false);
   });
 });
 
 describe("tool registration", () => {
   it("advertises named agents and tells callers to preserve their runtime defaults", async () => {
-    const [{ prompt }] = await captureGuidanceRequests();
-    assert.match(prompt, /Available named subagents/);
-    assert.match(prompt, /researcher.*Researches external topics using authoritative sources/);
-    assert.match(prompt, /omit.*model.*thinking.*named agent.*defaults/i);
+    await withIsolatedAgentEnv(async ({ globalAgentsDir }) => {
+      writeAgentFile(
+        globalAgentsDir,
+        "researcher",
+        [
+          "name: researcher",
+          "description: Researches external topics using authoritative sources",
+          "model: fake/research",
+          "thinking: max",
+        ].join("\n"),
+      );
 
-    const { api, registeredTools } = createMockExtensionApi();
-    (subagentsModule as any).default(api);
-    const subagent = registeredTools.find((tool) => tool.name === "subagent");
-    assert.ok(subagent);
-    assert.match(
-      subagent.parameters.properties.thinking.description,
-      /named agent's thinking default/i,
-    );
+      const { api, registeredTools, eventHandlers } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+
+      const subagent = registeredTools.find((tool) => tool.name === "subagent");
+      assert.ok(subagent);
+      const sessionStart = eventHandlers.get("session_start")?.[0];
+      assert.ok(sessionStart);
+      sessionStart({}, {
+        hasUI: false,
+        modelRegistry: {
+          find: (provider: string, id: string) => ({ provider, id, reasoning: true }),
+          getAvailable: () => [{
+            provider: "fake",
+            id: "parent",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 128_000,
+            maxTokens: 16_000,
+            cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+          }],
+          hasConfiguredAuth: () => true,
+        },
+      });
+
+      const guidance = subagent.promptGuidelines.join("\n");
+      assert.match(guidance, /Available named subagents/);
+      assert.match(
+        guidance,
+        /researcher.*Researches external topics using authoritative sources/,
+      );
+      assert.match(guidance, /omit.*model.*thinking.*named agent.*defaults/i);
+      assert.match(
+        subagent.parameters.properties.thinking.description,
+        /named agent's thinking default/i,
+      );
+    });
   });
 
-  it("delivers subagent routing guidance from the live authenticated model registry", async () => {
-    const [{ prompt }] = await captureGuidanceRequests();
-    assert.match(prompt, /guidance-test\/fast/);
-    assert.match(prompt, /inherit the parent runtime/);
+  it("refreshes subagent routing guidance from the live authenticated model registry", () => {
+    const { api, registeredTools, eventHandlers } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+
+    const subagent = registeredTools.find((tool) => tool.name === "subagent");
+    assert.ok(subagent);
+    const sessionStart = eventHandlers.get("session_start")?.[0];
+    assert.ok(sessionStart);
+    sessionStart({}, {
+      hasUI: false,
+      modelRegistry: {
+        find: (provider: string, id: string) => ({ provider, id, reasoning: true }),
+        getAvailable: () => [{
+          provider: "fake",
+          id: "fast",
+          reasoning: true,
+          input: ["text"],
+          contextWindow: 128_000,
+          maxTokens: 16_000,
+          cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+        }],
+        hasConfiguredAuth: () => true,
+      },
+    });
+
+    assert.match(subagent.promptGuidelines.join("\n"), /fake\/fast/);
+    assert.match(subagent.promptGuidelines.join("\n"), /inherit the parent runtime/);
   });
 
   it("ignores an inherited deny list in a parent process", () => {
     delete process.env.PI_SUBAGENT_ID;
-    process.env.PI_DENY_TOOLS = "subagent,subagent_interrupt,subagent_resume,subagents_list";
+    process.env.PI_DENY_TOOLS = "subagent,subagent_resume,subagents_list";
     try {
       const { api, registeredTools } = createMockExtensionApi();
       (subagentsModule as any).default(api);
       assert.equal(registeredTools.some((tool) => tool.name === "subagent"), true);
-      assert.equal(registeredTools.some((tool) => tool.name === "subagent_interrupt"), true);
+      assert.equal(registeredTools.some((tool) => tool.name === "subagent_resume"), true);
     } finally {
       delete process.env.PI_DENY_TOOLS;
     }
@@ -2083,12 +1960,12 @@ describe("tool registration", () => {
 
   it("applies the deny list inside a child subagent process", () => {
     process.env.PI_SUBAGENT_ID = "child-test";
-    process.env.PI_DENY_TOOLS = "subagent,subagent_interrupt";
+    process.env.PI_DENY_TOOLS = "subagent,subagent_resume";
     try {
       const { api, registeredTools } = createMockExtensionApi();
       (subagentsModule as any).default(api);
       assert.equal(registeredTools.some((tool) => tool.name === "subagent"), false);
-      assert.equal(registeredTools.some((tool) => tool.name === "subagent_interrupt"), false);
+      assert.equal(registeredTools.some((tool) => tool.name === "subagent_resume"), false);
       assert.equal(registeredTools.some((tool) => tool.name === "subagents_list"), true);
     } finally {
       delete process.env.PI_SUBAGENT_ID;
@@ -2096,25 +1973,11 @@ describe("tool registration", () => {
     }
   });
 
-  it("defaults resumed subagents to auto-exit and non-interactive tracking", () => {
-    const testApi = (subagentsModule as any).__test__;
-
-    assert.deepEqual(testApi.resolveResumeLaunchBehavior({}), {
-      autoExit: true,
-      interactive: false,
-    });
-    assert.deepEqual(testApi.resolveResumeLaunchBehavior({ autoExit: false }), {
-      autoExit: false,
-      interactive: true,
-    });
-  });
-
-  it("expands spawning false to deny subagent interruption", () => {
+  it("expands spawning false to deny all subagent tools", () => {
     const testApi = (subagentsModule as any).__test__;
     const denied = testApi.resolveDenyTools({ spawning: false });
 
     assert.equal(denied.has("subagent"), true);
-    assert.equal(denied.has("subagent_interrupt"), true);
     assert.equal(denied.has("subagent_resume"), true);
   });
 
@@ -2139,77 +2002,22 @@ describe("tool registration", () => {
     assert.match(output, /\(unnamed\)/);
   });
 
-  it("registers subagent_resume with an autoExit override", () => {
+  it("does not expose autoExit when resuming", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
-
     const resumeTool = registeredTools.find((tool) => tool.name === "subagent_resume");
     assert.ok(resumeTool, "expected subagent_resume tool to be registered");
-
-    const autoExitSchema = resumeTool.parameters.properties.autoExit;
-    assert.equal(autoExitSchema.type, "boolean");
-    assert.match(autoExitSchema.description, /Defaults to true/);
+    assert.equal("autoExit" in resumeTool.parameters.properties, false);
   });
 });
 
 describe("subagent parent lifecycle", () => {
-  it("preserves active subagents during extension reload", () => {
-    const abortController = new AbortController();
-    const agents = new Map([["child", {
-      abortController,
-      lifecycle: createLifecycle(1_000),
-    }]]);
-
-    cleanupSubagentsForShutdown("reload", agents);
-
-    assert.equal(shouldPreserveSubagentsOnShutdown("reload"), true);
-    assert.equal(abortController.signal.aborted, false);
-    assert.equal(shouldDeliverSubagentCompletion(agents.get("child")!), true);
-    assert.equal(agents.size, 1);
-  });
-
-  it("aborts and clears active subagents during final shutdown", () => {
-    for (const reason of ["quit", "new", "resume", "fork", undefined]) {
-      const abortController = new AbortController();
-      const running = { abortController, lifecycle: createLifecycle(1_000) };
-      const agents = new Map([["child", running]]);
-
-      cleanupSubagentsForShutdown(reason, agents);
-
-      assert.equal(shouldPreserveSubagentsOnShutdown(reason), false);
-      assert.equal(abortController.signal.aborted, true);
-      // Delivery is suppressed before the map is cleared so a racing watcher
-      // that still holds a reference cannot deliver after shutdown.
-      assert.equal(running.lifecycle.delivery, "suppressed");
-      assert.equal(shouldDeliverSubagentCompletion(running), false);
-      assert.equal(agents.size, 0);
-    }
-  });
-
-  it("treats lifecycle.delivery as the authoritative completion gate", () => {
-    const pending = { lifecycle: createLifecycle(1_000) };
-    assert.equal(shouldDeliverSubagentCompletion(pending), true);
-
-    const delivered = {
-      lifecycle: { ...createLifecycle(1_000), delivery: "delivered" as const },
-    };
-    assert.equal(shouldDeliverSubagentCompletion(delivered), false);
-
-    const suppressed = {
-      lifecycle: { ...createLifecycle(1_000), delivery: "suppressed" as const },
-    };
-    assert.equal(shouldDeliverSubagentCompletion(suppressed), false);
-
-    // Pre-lifecycle fixtures without a lifecycle field still default to pending.
-    assert.equal(shouldDeliverSubagentCompletion({} as any), true);
-  });
-
-  it("delivers completion through the reloaded extension API", () => {
-    const previous = { id: "previous" };
-    const current = { id: "current" };
-
-    assert.equal(selectCompletionApi(previous, current), current);
-    assert.equal(selectCompletionApi(previous, undefined), previous);
+  it("suppresses and clears pending foreground children on shutdown", () => {
+    const running = { surface: "missing-pane", lifecycle: createLifecycle(1_000) };
+    const agents = new Map([["child", running]]);
+    cleanupSubagentsForShutdown(agents);
+    assert.equal(running.lifecycle.delivery, "suppressed");
+    assert.equal(agents.size, 0);
   });
 });
 
@@ -2385,277 +2193,7 @@ describe("subagent activity snapshots", () => {
   });
 });
 
-describe("subagent interruption", () => {
-  function makeRunning(overrides: Record<string, unknown> = {}) {
-    return {
-      id: "a1",
-      name: "Worker",
-      task: "",
-      surface: "pane-1",
-      startTime: 0,
-      sessionFile: "worker.jsonl",
-      interactive: false,
-      lifecycle: createLifecycle(0),
-      ...overrides,
-    };
-  }
-
-  it("registers subagent_interrupt in the main session extension", () => {
-    const { api, registeredTools } = createMockExtensionApi();
-
-    (subagentsModule as any).default(api);
-
-    assert.equal(registeredTools.some((tool) => tool.name === "subagent_interrupt"), true);
-  });
-
-  it("resolves interrupt targets by exact id and reports name ambiguity", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    runningMap.clear();
-
-    try {
-      runningMap.set("a1", makeRunning({ id: "a1", name: "Worker", surface: "a1", sessionFile: "a1.jsonl" }));
-      runningMap.set("b2", makeRunning({ id: "b2", name: "Worker", surface: "b2", sessionFile: "b2.jsonl" }));
-      runningMap.set("c3", makeRunning({ id: "c3", name: "Scout", surface: "c3", sessionFile: "c3.jsonl" }));
-
-      const byId = testApi.resolveInterruptTarget({ id: "c3", name: "Worker" });
-      assert.equal(byId.running.id, "c3");
-
-      const ambiguous = testApi.resolveInterruptTarget({ name: "Worker" });
-      assert.match(ambiguous.error, /Ambiguous subagent name/);
-    } finally {
-      runningMap.clear();
-    }
-  });
-
-  it("returns an explicit error when Escape delivery fails", () => {
-    const testApi = (subagentsModule as any).__test__;
-    let aborted = false;
-    const running = makeRunning({
-      abortController: {
-        abort() {
-          aborted = true;
-        },
-      },
-    });
-
-    const result = testApi.requestSubagentInterrupt(running, () => {
-      throw new Error("mux write failed");
-    });
-
-    assert.match(result.error, /Failed to send Escape/);
-    assert.equal(aborted, false);
-    assert.equal("interruptRequested" in running, false);
-  });
-
-  it("leaves status unchanged when Escape delivery fails in the tool path", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    runningMap.clear();
-
-    const activeLifecycle = observeLifecycleActivity(
-      createLifecycle(0),
-      {
-        ok: true,
-        activity: {
-          version: 1,
-          runningChildId: "a1",
-          createdAt: 0,
-          updatedAt: 5_000,
-          sequence: 1,
-          latestEvent: "tool_execution_start",
-          phase: "active",
-          agentActive: true,
-          turnActive: true,
-          providerActive: false,
-          toolActive: true,
-          activeScope: "tool",
-          activeSince: 5_000,
-          toolName: "bash",
-        },
-      },
-      5_000,
-    );
-
-    try {
-      runningMap.set("a1", makeRunning({ lifecycle: activeLifecycle }));
-
-      const result = withMockedNow(20_000, () => testApi.handleSubagentInterrupt({ name: "Worker" }, () => {
-        throw new Error("mux write failed");
-      }));
-
-      assert.match(result.content[0].text, /Failed to send Escape/);
-      assert.equal(projectLifecycle(runningMap.get("a1").lifecycle, 20_000).kind, "active");
-    } finally {
-      runningMap.clear();
-    }
-  });
-
-  it("sends Escape without aborting or mutating running state", () => {
-    const testApi = (subagentsModule as any).__test__;
-    let aborted = false;
-    let sentSurface = "";
-    const running = makeRunning({
-      abortController: {
-        abort() {
-          aborted = true;
-        },
-      },
-    });
-
-    const result = testApi.requestSubagentInterrupt(running, (surface: string) => {
-      sentSurface = surface;
-    });
-
-    assert.deepEqual(result, { ok: true });
-    assert.equal(sentSurface, "pane-1");
-    assert.equal(aborted, false);
-    assert.equal("interruptRequested" in running, false);
-  });
-
-  it("refreshes the latest activity snapshot before forcing local interrupt waiting", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    let sentSurface = "";
-    runningMap.clear();
-
-    withTempDir((dir) => {
-      mkdirSync(join(dir, "subagent-activity"), { recursive: true });
-      const activityFile = getSubagentActivityFile(dir, "a1");
-      const activity = {
-        version: 1,
-        runningChildId: "a1",
-        createdAt: 1_000,
-        updatedAt: 19_000,
-        sequence: 7,
-        latestEvent: "tool_execution_start",
-        phase: "active",
-        agentActive: true,
-        turnActive: true,
-        providerActive: false,
-        toolActive: true,
-        activeScope: "tool",
-        activeSince: 19_000,
-        toolName: "bash",
-      };
-      writeFileSync(activityFile, `${JSON.stringify(activity)}\n`);
-
-      try {
-        runningMap.set("a1", makeRunning({ activityFile }));
-
-        withMockedNow(20_000, () => testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
-          sentSurface = surface;
-        }));
-
-        assert.equal(sentSurface, "pane-1");
-        const lifecycle = runningMap.get("a1").lifecycle;
-        const projection = projectLifecycle(lifecycle, 20_000);
-        assert.equal(projection.kind, "interrupted");
-        assert.equal(lifecycle.turn.kind, "interrupted");
-        assert.equal(lifecycle.lastActivitySequence, 7);
-        assert.equal(lifecycle.turn.previousActivitySequence, 7);
-      } finally {
-        runningMap.clear();
-      }
-    });
-  });
-
-  it("acknowledges Pi-backed interrupt requests and forces local status waiting", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    let sentSurface = "";
-    runningMap.clear();
-
-    const activeLifecycle = observeLifecycleActivity(
-      createLifecycle(0),
-      {
-        ok: true,
-        activity: {
-          version: 1,
-          runningChildId: "a1",
-          createdAt: 0,
-          updatedAt: 5_000,
-          sequence: 1,
-          latestEvent: "tool_execution_start",
-          phase: "active",
-          agentActive: true,
-          turnActive: true,
-          providerActive: false,
-          toolActive: true,
-          activeScope: "tool",
-          activeSince: 5_000,
-          toolName: "bash",
-        },
-      },
-      5_000,
-    );
-
-    try {
-      runningMap.set("a1", makeRunning({ lifecycle: activeLifecycle }));
-
-      const result = withMockedNow(20_000, () => testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
-        sentSurface = surface;
-      }));
-
-      assert.equal(sentSurface, "pane-1");
-      assert.equal(result.content[0].text, 'Interrupt requested for subagent "Worker".');
-      assert.deepEqual(result.details, { id: "a1", name: "Worker", status: "interrupt_requested" });
-      const projection = projectLifecycle(runningMap.get("a1").lifecycle, 20_000);
-      assert.equal(projection.kind, "interrupted");
-      assert.equal(runningMap.has("a1"), true);
-    } finally {
-      runningMap.clear();
-    }
-  });
-
-  it("sends Escape again for repeated interrupt requests", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    const surfaces: string[] = [];
-    runningMap.clear();
-
-    try {
-      runningMap.set("a1", makeRunning());
-
-      testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
-        surfaces.push(surface);
-      });
-      testApi.handleSubagentInterrupt({ name: "Worker" }, (surface: string) => {
-        surfaces.push(surface);
-      });
-
-      assert.deepEqual(surfaces, ["pane-1", "pane-1"]);
-      assert.equal(runningMap.has("a1"), true);
-    } finally {
-      runningMap.clear();
-    }
-  });
-
-  it("rejects Claude-backed interrupt requests before delivery", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    let delivered = false;
-    runningMap.clear();
-
-    try {
-      runningMap.set("a1", makeRunning({ cli: "claude" }));
-
-      const result = testApi.handleSubagentInterrupt({ name: "Worker" }, () => {
-        delivered = true;
-      });
-
-      assert.equal(delivered, false);
-      assert.match(result.content[0].text, /currently supported only for Pi-backed subagents/i);
-      assert.deepEqual(result.details, {
-        error: "claude interrupt unsupported",
-        id: "a1",
-        name: "Worker",
-      });
-    } finally {
-      runningMap.clear();
-    }
-  });
-
+describe("subagent results", () => {
   it("formats exit code 130 as an ordinary failure", () => {
     const testApi = (subagentsModule as any).__test__;
     const presentation = testApi.resolveResultPresentation(
@@ -2697,83 +2235,6 @@ describe("subagent interruption", () => {
     assert.match(presentation, /subagent_resume/);
     assert.match(presentation, /Resume: pi --session/);
     assert.doesNotMatch(presentation, /ignored when errorMessage is present/);
-  });
-});
-
-describe("subagent status renderer", () => {
-  function createTheme() {
-    return {
-      fg(_color: string, text: string) {
-        return text;
-      },
-      bg(_color: string, text: string) {
-        return text;
-      },
-      bold(text: string) {
-        return text;
-      },
-    };
-  }
-
-  it("renders only capped lines plus overflow", () => {
-    const { api, registeredMessageRenderers } = createMockExtensionApi();
-    (subagentsModule as any).default(api);
-
-    const rendererEntry = registeredMessageRenderers.find((entry) => entry.name === "subagent_status");
-    assert.ok(rendererEntry, "expected subagent_status renderer to be registered");
-
-    const visibleLines = [
-      "Worker running 5m, active (bash 2m).",
-      "Scout running 3m, waiting 1m.",
-      "Reviewer running 2m, active (streaming 30s).",
-      "Planner running 4m, waiting 2m.",
-    ];
-    const rendered = rendererEntry.renderer(
-      {
-        customType: "subagent_status",
-        content: "Subagent status:\n• Worker running 5m, active (bash 2m).",
-        details: {
-          lines: visibleLines,
-          overflow: 2,
-        },
-      },
-      { expanded: true },
-      createTheme(),
-    );
-    const output = rendered.render(80).join("\n");
-
-    assert.match(output, /Subagent status/);
-    for (const line of visibleLines) {
-      assert.match(output, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    }
-    assert.match(output, /\+2 more running\./);
-  });
-
-  it("stays within narrow widths", () => {
-    const { api, registeredMessageRenderers } = createMockExtensionApi();
-    (subagentsModule as any).default(api);
-
-    const rendererEntry = registeredMessageRenderers.find((entry) => entry.name === "subagent_status");
-    assert.ok(rendererEntry, "expected subagent_status renderer to be registered");
-
-    const rendered = rendererEntry.renderer(
-      {
-        customType: "subagent_status",
-        content: "Subagent status:\n• Worker running 5m, active (bash 2m).",
-        details: { lines: ["Worker running 5m, active (bash 2m)."], overflow: 0 },
-      },
-      { expanded: true },
-      createTheme(),
-    );
-
-    for (const width of [4, 5, 6]) {
-      for (const line of rendered.render(width)) {
-        assert.ok(
-          visibleWidth(line) <= width,
-          `expected line width <= ${width}, got ${visibleWidth(line)} for ${JSON.stringify(line)}`,
-        );
-      }
-    }
   });
 });
 
@@ -3156,18 +2617,6 @@ describe("herdr.ts", () => {
       assert.deepEqual(result, { kind: "missing", error: "pane gone" });
     });
 
-    it("treats an already-missing pane as successful cleanup", () => {
-      assert.equal(__herdrTest__.isPaneMissingError({
-        stderr: JSON.stringify({ error: { code: "pane_not_found", message: "pane gone" } }),
-        stdout: "",
-      }), true);
-      assert.equal(__herdrTest__.isPaneMissingError({
-        message: "connection refused",
-        stderr: "",
-        stdout: "",
-      }), false);
-    });
-
     it("continues from non-JSON stderr to structured stdout", () => {
       const result = __herdrTest__.parsePaneGetError({
         stderr: "warning: connection closed",
@@ -3209,72 +2658,6 @@ describe("herdr.ts", () => {
         result: { pane: { pane_id: "w1:p1", agent: "pi", agent_status: "paused" } },
       }), "w1:p1");
       assert.deepEqual(result, { kind: "present", agent: "pi", agentStatus: "unknown" });
-    });
-  });
-});
-
-describe("subagent surface layout", () => {
-  describe("buildPaneSplitArgs", () => {
-    it("constructs a right-hand split against the parent pane", () => {
-      assert.deepEqual(__herdrTest__.buildPaneSplitArgs("w1:p1", "right", "/repo"), [
-        "pane",
-        "split",
-        "w1:p1",
-        "--direction",
-        "right",
-        "--no-focus",
-        "--cwd",
-        "/repo",
-      ]);
-    });
-
-    it("constructs a downward split against the parent pane", () => {
-      assert.deepEqual(__herdrTest__.buildPaneSplitArgs("w1:p1", "down", "/repo"), [
-        "pane",
-        "split",
-        "w1:p1",
-        "--direction",
-        "down",
-        "--no-focus",
-        "--cwd",
-        "/repo",
-      ]);
-    });
-  });
-
-  describe("parseSubagentLayout", () => {
-    it("defaults to a tab when the env var is unset", () => {
-      assert.equal(parseSubagentLayout(undefined), "tab");
-    });
-
-    it("defaults to a tab when the env var is empty or whitespace", () => {
-      assert.equal(parseSubagentLayout(""), "tab");
-      assert.equal(parseSubagentLayout("   "), "tab");
-    });
-
-    it("maps `split` to a right-hand split", () => {
-      assert.equal(parseSubagentLayout("split"), "right");
-    });
-
-    it("maps `split:right` to a right-hand split", () => {
-      assert.equal(parseSubagentLayout("split:right"), "right");
-    });
-
-    it("maps `split:down` to a downward split", () => {
-      assert.equal(parseSubagentLayout("split:down"), "down");
-    });
-
-    it("falls back to a tab for unknown values", () => {
-      assert.equal(parseSubagentLayout("side-by-side"), "tab");
-      assert.equal(parseSubagentLayout("tab"), "tab");
-    });
-  });
-
-  describe("resolveSubagentLayout", () => {
-    it("reads PI_SUBAGENT_LAYOUT from the provided environment", () => {
-      assert.equal(resolveSubagentLayout({ PI_SUBAGENT_LAYOUT: "split:down" }), "down");
-      assert.equal(resolveSubagentLayout({ PI_SUBAGENT_LAYOUT: "split" }), "right");
-      assert.equal(resolveSubagentLayout({}), "tab");
     });
   });
 });

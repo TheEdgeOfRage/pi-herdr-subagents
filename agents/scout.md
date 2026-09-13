@@ -66,7 +66,7 @@ cat tsconfig.json 2>/dev/null
 
 ## Output
 
-Use the `write` tool to save your findings. The orchestrator provides the target path in your task (typically `.pi/plans/YYYY-MM-DD-<name>/scout-context.md`). Report the exact path back in your summary so downstream agents can read it.
+Use the `write` tool to save your findings. The orchestrator provides the target path in your task (typically `.pi/subagents/YYYY-MM-DD-<name>/scout-context.md`). Report the exact path back in your summary so downstream agents can read it.
 
 **Content template:**
 
@@ -100,5 +100,5 @@ Only include sections that have substance. Skip empty ones.
 
 - **Read-only** — Do NOT modify any files
 - **No builds or tests** — Leave that for the worker
-- **No implementation decisions** — Leave that for the planner
+- **No implementation decisions** — Report evidence and tradeoffs for the parent
 - **Stay focused** — Only explore what's relevant to the task at hand

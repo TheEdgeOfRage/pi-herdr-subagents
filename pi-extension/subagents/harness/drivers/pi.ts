@@ -49,7 +49,6 @@ export class PiHarnessDriver implements HarnessDriver {
   readonly id = "pi";
   readonly name = "Pi";
   readonly hasActivitySnapshots = true;
-  readonly supportsTurnInterrupt = true;
 
   formatModel(runtimePlan: Pick<ResolvedRuntimePlan, "model" | "modelId" | "provider">): string {
     return runtimePlan.model;
@@ -67,7 +66,6 @@ export class PiHarnessDriver implements HarnessDriver {
       subagentSessionFile,
       effectiveCwd,
       localAgentDir,
-      effectiveAutoExit,
       taskDelivery,
       denySet,
       identity,
@@ -128,9 +126,7 @@ export class PiHarnessDriver implements HarnessDriver {
     if (params.agent) {
       envParts.push(`PI_SUBAGENT_AGENT=${shellQuote(params.agent)}`);
     }
-    if (effectiveAutoExit) {
-      envParts.push("PI_SUBAGENT_AUTO_EXIT=1");
-    }
+    envParts.push("PI_SUBAGENT_AUTO_EXIT=1");
     envParts.push(`PI_SUBAGENT_SESSION=${shellQuote(subagentSessionFile)}`);
     envParts.push(`PI_SUBAGENT_ID=${shellQuote(params.id)}`);
     const activityFile = join(artifactDir, `subagent-activity-${params.id}.json`);
