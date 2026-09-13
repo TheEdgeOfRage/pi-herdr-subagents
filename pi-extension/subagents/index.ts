@@ -847,7 +847,7 @@ function requestSubagentInterrupt(
   } catch (error: any) {
     return {
       error:
-        `Failed to send Escape to subagent "${running.name}" via herdr: ` +
+        `Failed to send Escape to subagent "${running.name}": ` +
         `${error?.message ?? String(error)}`,
     };
   }
@@ -1359,11 +1359,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       name: "subagent",
       label: "Subagent",
       description:
-        "Spawn an autonomous sub-agent in a dedicated herdr pane and wait for its result. " +
+        "Delegate an autonomous sub-agent and wait for its result. " +
         "Several subagent calls in one tool-call batch run concurrently; Pi waits for every result before the next parent model request. " +
         "Delegate only independent work and use each returned result before acting on it.",
       promptSnippet:
-        "Spawn an autonomous sub-agent in a dedicated herdr pane and wait for its result. " +
+        "Delegate an autonomous sub-agent and wait for its result. " +
         "Several subagent calls in one tool-call batch run concurrently; Pi waits for every result before the next parent model request. " +
         "Delegate only independent work and use each returned result before acting on it.",
       promptGuidelines: subagentRoutingGuidelines,
@@ -1494,10 +1494,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       label: "Interrupt Subagent",
       description:
         "Send Escape to the active turn of a currently running Pi-backed subagent. " +
-        "The child pane and session remain alive until the pending foreground tool call settles.",
+        "The child session remains available until the pending foreground tool call settles.",
       promptSnippet:
         "Send Escape to the active turn of a currently running Pi-backed subagent. " +
-        "The child pane and session remain alive until the pending foreground tool call settles.",
+        "The child session remains available until the pending foreground tool call settles.",
       parameters: Type.Object({
         id: Type.Optional(Type.String({ description: "Exact running subagent id" })),
         name: Type.Optional(Type.String({ description: "Exact running subagent display name" })),
@@ -1599,15 +1599,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       name: "subagent_resume",
       label: "Resume Subagent",
       description:
-        "Resume a previous sub-agent session in a new herdr pane and wait for its result. " +
+        "Resume a previous sub-agent session and wait for its result. " +
         "Use a caller_ping result to decide whether to resume with follow-up instructions.",
       promptSnippet:
-        "Resume a previous sub-agent session in a new herdr pane and wait for its result. " +
+        "Resume a previous sub-agent session and wait for its result. " +
         "Use a caller_ping result to decide whether to resume with follow-up instructions.",
       parameters: Type.Object({
         sessionPath: Type.String({ description: "Path to the session .jsonl file to resume" }),
         name: Type.Optional(
-          Type.String({ description: "Display name for the terminal tab. Default: 'Resume'" }),
+          Type.String({ description: "Display name for the resumed subagent. Default: 'Resume'" }),
         ),
         message: Type.Optional(
           Type.String({
