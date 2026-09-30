@@ -37,7 +37,6 @@ pi
 | --- | --- |
 | `subagent` | Start an autonomous child in a Herdr pane and wait for its result. |
 | `subagent_resume` | Resume a child session and wait for its result. |
-| `subagent_interrupt` | Send Escape to a running Pi-backed child turn. |
 | `subagents_list` | List named agent definitions. |
 
 `/subagent <agent> <task>` asks the parent to make a synchronous `subagent` call. `/plan` and `/iterate` are not provided.

@@ -49,7 +49,6 @@ export class PiHarnessDriver implements HarnessDriver {
   readonly id = "pi";
   readonly name = "Pi";
   readonly hasActivitySnapshots = true;
-  readonly supportsTurnInterrupt = true;
 
   formatModel(runtimePlan: Pick<ResolvedRuntimePlan, "model" | "modelId" | "provider">): string {
     return runtimePlan.model;

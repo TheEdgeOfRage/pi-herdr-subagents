@@ -17,7 +17,6 @@ import {
   createSubagentPane,
   runScriptInPane,
   closePane,
-  interruptPane,
   shellQuote,
   readPane,
   readPaneAsync,
@@ -62,7 +61,6 @@ import {
   markCompletionDetected,
   markDelivery,
   markFailed,
-  markInterruptRequested,
   markProcessRunning,
   observeActivity,
   observePaneInspection,
@@ -192,7 +190,6 @@ interface ListedAgentDefinition extends AgentDefinition {
 /** Tools that are gated by `spawning: false` */
 const SPAWNING_TOOLS = new Set([
   "subagent",
-  "subagent_interrupt",
   "subagents_list",
   "subagent_resume",
 ]);
@@ -754,9 +751,7 @@ function ensureLifecycle(running: RunningSubagent): SubagentLifecycle {
     return lifecycle;
   }
   const state = running.statusState;
-  if (state?.activityLabel === "interrupted" && state.localOverrideAtMs != null) {
-    lifecycle = markInterruptRequested(lifecycle, state.localOverrideAtMs);
-  } else if (state?.phase === "done") {
+  if (state?.phase === "done") {
     // Legacy activity "done" means the turn ended, not that completion
     // evidence was recorded. Hydrate as Herdr-style waiting and let the
     // preserved watcher consume sidecar/sentinel evidence.
@@ -813,96 +808,6 @@ function observeRunningSubagent(running: RunningSubagent, observedAt = Date.now(
   running.lifecycle = observeActivity(ensureLifecycle(running), read, observedAt);
 }
 
-function resolveInterruptTarget(params: { id?: string; name?: string }):
-  | { running: RunningSubagent }
-  | { error: string } {
-  const requestedId = params.id?.trim();
-  if (requestedId) {
-    const running = runningSubagents.get(requestedId);
-    return running ? { running } : { error: `No running subagent with id "${requestedId}".` };
-  }
-
-  const requestedName = params.name?.trim();
-  if (!requestedName) {
-    return { error: "Provide a running subagent id or exact display name." };
-  }
-
-  const matches = Array.from(runningSubagents.values()).filter((running) => running.name === requestedName);
-  if (matches.length === 1) return { running: matches[0] };
-  if (matches.length === 0) {
-    return { error: `No running subagent named "${requestedName}".` };
-  }
-
-  const candidates = matches.map((running) => `${running.name} [${running.id}]`).join(", ");
-  return { error: `Ambiguous subagent name "${requestedName}". Matches: ${candidates}` };
-}
-
-function requestSubagentInterrupt(
-  running: RunningSubagent,
-  interruptPaneKey: (surface: string) => void = interruptPane,
-): { ok: true } | { error: string } {
-  try {
-    interruptPaneKey(running.surface);
-    return { ok: true };
-  } catch (error: any) {
-    return {
-      error:
-        `Failed to send Escape to subagent "${running.name}": ` +
-        `${error?.message ?? String(error)}`,
-    };
-  }
-}
-
-function handleSubagentInterrupt(
-  params: { id?: string; name?: string },
-  interruptPaneKey: (surface: string) => void = interruptPane,
-) {
-  const resolved = resolveInterruptTarget(params);
-  if ("error" in resolved) {
-    return {
-      content: [{ type: "text" as const, text: resolved.error }],
-      details: { error: resolved.error },
-    };
-  }
-
-  const running = resolved.running;
-  const driver = getHarnessDriver(running.cli);
-  if (!driver.supportsTurnInterrupt) {
-    return {
-      content: [{
-        type: "text" as const,
-        text:
-          `Turn-only Escape interrupt is currently supported only for Pi-backed subagents. ${driver.name}-backed semantics have not been verified yet.`,
-      }],
-      details: {
-        error: `${running.cli ?? "external"} interrupt unsupported`,
-        id: running.id,
-        name: running.name,
-      },
-    };
-  }
-
-  const now = Date.now();
-  observeRunningSubagent(running, now);
-
-  const interruption = requestSubagentInterrupt(running, interruptPaneKey);
-  if ("error" in interruption) {
-    return {
-      content: [{ type: "text" as const, text: interruption.error }],
-      details: { error: interruption.error, id: running.id, name: running.name },
-    };
-  }
-
-  running.lifecycle = markInterruptRequested(ensureLifecycle(running), now);
-  updateWidget();
-
-  return {
-    content: [{ type: "text" as const, text: `Interrupt requested for subagent "${running.name}".` }],
-    details: { id: running.id, name: running.name, status: "interrupt_requested" },
-  };
-}
-
-
 export const __test__ = {
   borderLine,
   getShellReadyDelayMs,
@@ -917,9 +822,6 @@ export const __test__ = {
   buildPiPromptArgs,
   observeRunningSubagent,
   resolveDenyTools,
-  resolveInterruptTarget,
-  requestSubagentInterrupt,
-  handleSubagentInterrupt,
   resolveResultPresentation,
   formatForegroundResult,
   runningSubagents,
@@ -1482,56 +1384,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             0,
           );
         }
-        const text = typeof result.content[0]?.text === "string" ? result.content[0].text : "";
-        return new Text(theme.fg("dim", text), 0, 0);
-      },
-    });
-
-  // ── subagent_interrupt tool ──
-  if (shouldRegister("subagent_interrupt"))
-    pi.registerTool({
-      name: "subagent_interrupt",
-      label: "Interrupt Subagent",
-      description:
-        "Send Escape to the active turn of a currently running Pi-backed subagent. " +
-        "The child session remains available until the pending foreground tool call settles.",
-      promptSnippet:
-        "Send Escape to the active turn of a currently running Pi-backed subagent. " +
-        "The child session remains available until the pending foreground tool call settles.",
-      parameters: Type.Object({
-        id: Type.Optional(Type.String({ description: "Exact running subagent id" })),
-        name: Type.Optional(Type.String({ description: "Exact running subagent display name" })),
-      }),
-
-      async execute(_toolCallId, params) {
-        return handleSubagentInterrupt(params);
-      },
-
-      renderCall(args, theme) {
-        const target = args.id ? `${args.id}` : args.name ?? "(unknown)";
-        return new Text(
-          theme.fg("accent", "▸") +
-            " " +
-            theme.fg("toolTitle", theme.bold(target)) +
-            theme.fg("dim", " — interrupt turn"),
-          0,
-          0,
-        );
-      },
-
-      renderResult(result, _opts, theme) {
-        const details = result.details as any;
-        if (details?.status === "interrupt_requested") {
-          return new Text(
-            theme.fg("accent", "▸") +
-              " " +
-              theme.fg("toolTitle", theme.bold(details.name ?? details.id ?? "subagent")) +
-              theme.fg("dim", " — interrupt requested"),
-            0,
-            0,
-          );
-        }
-
         const text = typeof result.content[0]?.text === "string" ? result.content[0].text : "";
         return new Text(theme.fg("dim", text), 0, 0);
       },
